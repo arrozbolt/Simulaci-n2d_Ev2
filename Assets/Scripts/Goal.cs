@@ -32,21 +32,26 @@ public class Goal : MonoBehaviour
 
     void Update()
     {
-        // Actualizar posición si está habilitado (trayectoria en forma de "C" — arco semicircular)
+        // Actualizar posición si está habilitado (trayectoria en forma de "C")
         if (moveEnabled)
         {
             // u en [0,1] recorre el arco; Mathf.PingPong hace que vaya y vuelva
             float u = Mathf.PingPong(Time.time * speed + phase, 1f);
-            // theta va de +PI/2 (arriba) a -PI/2 (abajo) para formar un arco
-            float theta = Mathf.Lerp(Mathf.PI * 0.5f, -Mathf.PI * 0.5f, u);
 
-            // Centro del arco desplazado a la izquierda 
+            // Reemplazando Mathf.Lerp con cálculo manual:
+            // theta = inicio + (final - inicio) * factor
+            float startAngle = Mathf.PI * 0.5f;    // +90°
+            float endAngle = -Mathf.PI * 0.5f;     // -90°
+            float angleRange = endAngle - startAngle; // -180° (-π)
+            float theta = startAngle + angleRange * u;
+
+            // Centro del arco desplazado a la izquierda
             Vector3 center = startPos + new Vector3(-radiusX, 0f, 0f);
 
             Vector3 p;
             p.x = center.x + radiusX * Mathf.Cos(theta);
             p.y = center.y + radiusY * Mathf.Sin(theta);
-            p.z = startPos.z; // mantener z original
+            p.z = startPos.z;
             transform.position = p;
         }
 
