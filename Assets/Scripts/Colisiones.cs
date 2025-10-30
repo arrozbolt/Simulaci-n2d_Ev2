@@ -65,13 +65,14 @@ public class ColisionPorCodigo : MonoBehaviour
         float half = punchDuration * 0.5f;
         float elapsed = 0f;
 
-        // Escalar hacia arriba
+        // Escalar hacia arriba (interpolación manual y smoothstep manual)
         while (elapsed < half)
         {
             if (sr == null) break;
             elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / half);
-            sr.transform.localScale = Vector3.Lerp(originalScale, targetScale, Mathf.SmoothStep(0f, 1f, t));
+            float t = Clamp01(elapsed / half);
+            float s = SmoothStep01(t);
+            sr.transform.localScale = Lerp(originalScale, targetScale, s);
             yield return null;
         }
 
@@ -81,8 +82,9 @@ public class ColisionPorCodigo : MonoBehaviour
         {
             if (sr == null) break;
             elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / half);
-            sr.transform.localScale = Vector3.Lerp(targetScale, originalScale, Mathf.SmoothStep(0f, 1f, t));
+            float t = Clamp01(elapsed / half);
+            float s = SmoothStep01(t);
+            sr.transform.localScale = Lerp(targetScale, originalScale, s);
             yield return null;
         }
 
@@ -133,5 +135,30 @@ public class ColisionPorCodigo : MonoBehaviour
         Rect rectB = new Rect(posB - sizeB / 2f, sizeB);
 
         return rectA.Overlaps(rectB);
+    }
+
+    // Helpers manuales (sin usar Mathf)
+    static float Clamp01(float v)
+    {
+        if (v <= 0f) return 0f;
+        if (v >= 1f) return 1f;
+        return v;
+    }
+
+    // SmoothStep para [0,1] -> t*t*(3 - 2*t)
+    static float SmoothStep01(float t)
+    {
+        // asume t en [0,1]
+        return (t * t) * (3f - 2f * t);
+    }
+
+    // Lerp manual para Vector3
+    static Vector3 Lerp(Vector3 a, Vector3 b, float t)
+    {
+        return new Vector3(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t
+        );
     }
 }
