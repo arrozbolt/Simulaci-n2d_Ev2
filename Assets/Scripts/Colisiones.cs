@@ -72,7 +72,14 @@ public class ColisionPorCodigo : MonoBehaviour
             elapsed += Time.deltaTime;
             float t = Clamp01(elapsed / half);
             float s = SmoothStep01(t);
-            sr.transform.localScale = Lerp(originalScale, targetScale, s);
+
+            // Interpolación manual por componentes (sin usar Lerp)
+            sr.transform.localScale = new Vector3(
+                originalScale.x + (targetScale.x - originalScale.x) * s,
+                originalScale.y + (targetScale.y - originalScale.y) * s,
+                originalScale.z + (targetScale.z - originalScale.z) * s
+            );
+
             yield return null;
         }
 
