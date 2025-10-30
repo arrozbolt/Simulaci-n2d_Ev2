@@ -26,13 +26,13 @@ public class ProjectileController : MonoBehaviour
 
     void ApplyGravities()
     {
-        PlanetGravity[] planets = FindObjectsOfType<PlanetGravity>();
+        PlanetGravity[] planets = FindObjectsByType<PlanetGravity>(FindObjectsSortMode.None);
         foreach (var p in planets)
         {
             p.ApplyGravity(this);
         }
 
-        WaterBlock[] waters = FindObjectsOfType<WaterBlock>();
+        WaterBlock[] waters = FindObjectsByType<WaterBlock>(FindObjectsSortMode.None);
         foreach (var w in waters)
         {
             w.ApplyBuoyancy(this);
