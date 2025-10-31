@@ -14,14 +14,30 @@ public class Parable : MonoBehaviour
     public float m_minParable;
     public float m_duration;
 
+    // Cachear referencia al proyectil en escena
+    private ProjectileController proj;
+
     void Start()
     {
         transform.position = m_pivot.position;
         StartCoroutine(TimeCor());
+
+        proj = Object.FindFirstObjectByType<ProjectileController>();
     } 
 
     void Update()
     {
+        // Intentar obtener la referencia si aún no existe
+        if (proj == null)
+            proj = Object.FindFirstObjectByType<ProjectileController>();
+
+        // Si existe el proyectil y llegó a la meta, detener el movimiento de este objeto
+        if (proj != null && proj.reachedGoal)
+        {
+            m_start = false;
+            return;
+        }
+
         if (m_start) StartMove();
     }
 
