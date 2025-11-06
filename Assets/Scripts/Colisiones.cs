@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -7,6 +7,18 @@ public class ColisionPorCodigo : MonoBehaviour
 {
     // Sprites a comprobar (asignar en el inspector).
     public List<SpriteRenderer> objetos = new List<SpriteRenderer>();
+
+    // objetos con los que se debe rebotar (separada de 'objetos')
+    [Tooltip("Objetos que provocan rebote al colisionar con cualquiera de 'objetos'")]
+    public List<SpriteRenderer> objetosRebote = new List<SpriteRenderer>();
+
+    // Fuerza del impulso aplicado al proyectil (vector de signo)
+    [Tooltip("Magnitud del impulso aplicado al proyectil al chocar con un objeto de 'objetosRebote'")]
+    public float impulseStrength = 5f;
+
+    // Small offset para sacar al proyectil de la superposición
+    [Tooltip("Desplazamiento mínimo para separar el proyectil del objeto tras el impacto")]
+    public float separationOffset = 0.02f;
 
     // Feedback visual
     public Color flashColor = Color.red;
@@ -17,8 +29,11 @@ public class ColisionPorCodigo : MonoBehaviour
     public float punchAmount = 0.15f;
     public float punchDuration = 0.12f;
 
-    // Colisiones del frame anterior (para disparar efecto s�lo al inicio)
+    // Colisiones del frame anterior (para disparar efecto sólo al inicio)
     HashSet<(SpriteRenderer, SpriteRenderer)> colisionesPrevias = new HashSet<(SpriteRenderer, SpriteRenderer)>();
+
+    // Colisiones previas entre 'objetos' y 'objetosRebote' (evitar múltiples impulsos por frame)
+    HashSet<(SpriteRenderer, SpriteRenderer)> rebotesPrevios = new HashSet<(SpriteRenderer, SpriteRenderer)>();
 
     // Evita lanzar varias corrutinas sobre el mismo sprite
     HashSet<SpriteRenderer> spritesEnEfecto = new HashSet<SpriteRenderer>();
@@ -27,7 +42,7 @@ public class ColisionPorCodigo : MonoBehaviour
     {
         var colisiones = ObtenerColisiones(objetos);
 
-        // Disparar efecto s�lo cuando la colisi�n comienza
+        // Disparar efecto sólo cuando la colisión comienza
         foreach (var pair in colisiones)
         {
             if (!colisionesPrevias.Contains(pair))
@@ -38,9 +53,25 @@ public class ColisionPorCodigo : MonoBehaviour
         }
 
         colisionesPrevias = new HashSet<(SpriteRenderer, SpriteRenderer)>(colisiones);
+
+        // --- Gestión de impulsos entre 'objetos' y 'objetosRebote' ---
+        var paresRebote = ObtenerColisionesEntreListas(objetos, objetosRebote);
+
+        foreach (var pair in paresRebote)
+        {
+            if (!rebotesPrevios.Contains(pair))
+            {
+                if (pair.Item1 != null) TriggerImpactVisual(pair.Item1);
+                if (pair.Item2 != null) TriggerImpactVisual(pair.Item2);
+
+                AplicarImpulso(pair.Item1, pair.Item2);
+            }
+        }
+
+        rebotesPrevios = new HashSet<(SpriteRenderer, SpriteRenderer)>(paresRebote);
     }
 
-    // Lanza la corrutina de feedback si no est� ya en curso
+    // Lanza la corrutina de feedback si no está ya en curso
     void TriggerImpactVisual(SpriteRenderer sr)
     {
         if (sr == null) return;
@@ -65,7 +96,7 @@ public class ColisionPorCodigo : MonoBehaviour
         float half = punchDuration * 0.5f;
         float elapsed = 0f;
 
-        // Escalar hacia arriba (interpolaci�n manual y smoothstep manual)
+        // Escalar hacia arriba (interpolación manual y smoothstep manual)
         while (elapsed < half)
         {
             if (sr == null) break;
@@ -73,7 +104,7 @@ public class ColisionPorCodigo : MonoBehaviour
             float t = Clamp01(elapsed / half);
             float s = SmoothStep01(t);
 
-            // Interpolaci�n manual por componentes (sin usar Lerp)
+            // Interpolación manual por componentes (sin usar Lerp)
             sr.transform.localScale = new Vector3(
                 originalScale.x + (targetScale.x - originalScale.x) * s,
                 originalScale.y + (targetScale.y - originalScale.y) * s,
@@ -104,7 +135,7 @@ public class ColisionPorCodigo : MonoBehaviour
         spritesEnEfecto.Remove(sr);
     }
 
-    // Devuelve pares �nicos (i,j con j>i) que se solapan
+    // Devuelve pares únicos (i,j con j>i) que se solapan
     List<(SpriteRenderer, SpriteRenderer)> ObtenerColisiones(List<SpriteRenderer> lista)
     {
         var resultado = new List<(SpriteRenderer, SpriteRenderer)>();
@@ -130,7 +161,32 @@ public class ColisionPorCodigo : MonoBehaviour
         return resultado;
     }
 
-    // Comprobaci�n AABB usando bounds del SpriteRenderer
+    // Comprueba colisiones entre dos listas (pares (a,b) donde a ∈ listaA y b ∈ listaB)
+    List<(SpriteRenderer, SpriteRenderer)> ObtenerColisionesEntreListas(List<SpriteRenderer> listaA, List<SpriteRenderer> listaB)
+    {
+        var resultado = new List<(SpriteRenderer, SpriteRenderer)>();
+        if (listaA == null || listaB == null) return resultado;
+
+        for (int i = 0; i < listaA.Count; i++)
+        {
+            var a = listaA[i];
+            if (a == null) continue;
+            for (int j = 0; j < listaB.Count; j++)
+            {
+                var b = listaB[j];
+                if (b == null) continue;
+
+                if (SeSuperponen(a, b))
+                {
+                    resultado.Add((a, b));
+                }
+            }
+        }
+
+        return resultado;
+    }
+
+    // Comprobación AABB usando bounds del SpriteRenderer
     bool SeSuperponen(SpriteRenderer a, SpriteRenderer b)
     {
         Vector2 posA = a.transform.position;
@@ -142,6 +198,65 @@ public class ColisionPorCodigo : MonoBehaviour
         Rect rectB = new Rect(posB - sizeB / 2f, sizeB);
 
         return rectA.Overlaps(rectB);
+    }
+
+    // Aplica un impulso al ProjectileController encontrado en uno de los dos sprites.
+    // El impulso es un vector de signo determinado por la posición relativa.
+    // Además separa al proyectil del objeto para evitar que quede solapado y atraviese otras paredes.
+    void AplicarImpulso(SpriteRenderer a, SpriteRenderer b)
+    {
+        if (a == null || b == null) return;
+
+        // Priorizar detectar ProjectileController en 'a' luego en 'b'
+        ProjectileController pc = a.GetComponent<ProjectileController>();
+        SpriteRenderer other = b;
+        if (pc == null)
+        {
+            pc = b.GetComponent<ProjectileController>();
+            other = a;
+        }
+
+        if (pc == null) return; // ninguno es proyectil
+
+        // No aplicar si ya llegó a la meta
+        if (pc.reachedGoal) return;
+
+        // Dirección aproximada sin usar funciones matemáticas: signo de la diferencia de centros
+        Vector2 dir = (Vector2)pc.transform.position - (Vector2)other.transform.position;
+
+        float sx = dir.x > 0f ? 1f : (dir.x < 0f ? -1f : 0f);
+        float sy = dir.y > 0f ? 1f : (dir.y < 0f ? -1f : 0f);
+
+        // Si la diferencia es casi cero, usar impulso hacia arriba
+        if (sx == 0f && sy == 0f)
+        {
+            sy = 1f;
+        }
+
+        Vector2 impulso = new Vector2(sx * impulseStrength, sy * impulseStrength);
+
+        // Evitar que la componente de velocidad apunte hacia la pared:
+        float vx = pc.velocity.x;
+        float vy = pc.velocity.y;
+        if (sx != 0f && vx * sx < 0f)
+        {
+            vx = -vx; // invertir componente que apunta hacia la pared
+        }
+        if (sy != 0f && vy * sy < 0f)
+        {
+            vy = -vy;
+        }
+
+        // Aplicar impulso sumándolo a la velocidad ajustada.
+        pc.velocity = new Vector2(vx, vy) + impulso;
+
+        // Separar ligeramente al proyectil fuera del objeto para evitar solapamiento
+        float ox = sx * separationOffset;
+        float oy = sy * separationOffset;
+        pc.transform.position = (Vector2)pc.transform.position + new Vector2(ox, oy);
+
+        // Asegurar que el proyectil está marcado como lanzado para que siga siendo actualizado
+        pc.launched = true;
     }
 
     // Helpers manuales (sin usar Mathf)
