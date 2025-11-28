@@ -1,0 +1,156 @@
+#pragma kernel CSMain
+
+// Estructuras de datos
+struct SpriteData
+{
+    float3 position;
+    float2 boundsSize;
+    float2 velocity;
+    int isProjectile;
+    int reachedGoal;
+};
+
+// Buffers de entrada
+StructuredBuffer<SpriteData> Objetos;
+StructuredBuffer<SpriteData> ObjetosRebote;
+
+// Buffers de salida
+RWStructuredBuffer<float2> OutVelocities;
+RWStructuredBuffer<float3> OutPositions;
+RWStructuredBuffer<int> OutCollisionPairs;
+RWStructuredBuffer<int> OutRebotePairs;
+
+// Contadores atomicos
+RWStructuredBuffer<int> CollisionCounter;
+RWStructuredBuffer<int> ReboteCounter;
+
+// Parametros del shader
+int ObjetosCount;
+int ObjetosReboteCount;
+float ImpulseStrength;
+float SeparationOffset;
+float BounceDamping;
+float MaxSpeed;
+
+// Constantes internas
+static const int MAX_COLLISIONS = 1024;
+static const int COLLISION_STRIDE = 3;
+
+// Funciones auxiliares
+bool AABBOverlap(float2 posA, float2 halfA, float2 posB, float2 halfB)
+{
+    float2 diff = abs(posA - posB);
+    float2 overlap = halfA + halfB;
+    return (diff.x <= overlap.x) && (diff.y <= overlap.y);
+}
+
+void ApplyImpulse(uint id, SpriteData current, SpriteData other, inout float2 velocity, inout float3 position)
+{
+    float2 posP = current.position.xy;
+    float2 posO = other.position.xy;
+    float2 halfP = current.boundsSize * 0.5;
+    float2 halfO = other.boundsSize * 0.5;
+
+    float dx = posP.x - posO.x;
+    float dy = posP.y - posO.y;
+    float absDx = abs(dx);
+    float absDy = abs(dy);
+
+    float overlapX = (halfP.x + halfO.x) - absDx;
+    float overlapY = (halfP.y + halfO.y) - absDy;
+
+    if (overlapX <= 0 && overlapY <= 0)
+        return;
+
+    float vx = velocity.x;
+    float vy = velocity.y;
+
+    if (overlapX < overlapY)
+    {
+        float signX = dx < 0 ? -1 : 1;
+        vx = -vx * BounceDamping;
+        float push = overlapX + SeparationOffset;
+        position.xy += float2(signX * push, 0);
+        vx += signX * ImpulseStrength;
+    }
+    else
+    {
+        float signY = dy < 0 ? -1 : 1;
+        vy = -vy * BounceDamping;
+        float push = overlapY + SeparationOffset;
+        position.xy += float2(0, signY * push);
+        vy += signY * ImpulseStrength;
+    }
+
+    // Limitar velocidad maxima
+    float magSq = vx * vx + vy * vy;
+    float maxSq = MaxSpeed * MaxSpeed;
+    if (magSq > maxSq)
+    {
+        float scale = MaxSpeed / sqrt(magSq);
+        vx *= scale;
+        vy *= scale;
+    }
+
+    velocity = float2(vx, vy);
+}
+
+// Kernel principal
+[numthreads(64, 1, 1)]
+void CSMain(uint id : SV_DispatchThreadID)
+{
+    if (id >= ObjetosCount)
+        return;
+
+    SpriteData current = Objetos[id];
+    float2 newVelocity = current.velocity;
+    float3 newPosition = current.position;
+
+    // Colisiones entre objetos de la misma lista
+    for (uint j = id + 1; j < ObjetosCount; j++)
+    {
+        SpriteData other = Objetos[j];
+
+        if (AABBOverlap(current.position.xy, current.boundsSize * 0.5,
+                       other.position.xy, other.boundsSize * 0.5))
+        {
+            int prevIndex;
+            InterlockedAdd(CollisionCounter[0], COLLISION_STRIDE, prevIndex);
+
+            if (prevIndex + (COLLISION_STRIDE - 1) < MAX_COLLISIONS)
+            {
+                OutCollisionPairs[prevIndex + 0] = (int) id;
+                OutCollisionPairs[prevIndex + 1] = (int) j;
+                OutCollisionPairs[prevIndex + 2] = 0;
+            }
+        }
+    }
+
+    // Colisiones con objetos de rebote
+    for (uint k = 0; k < ObjetosReboteCount; k++)
+    {
+        SpriteData other = ObjetosRebote[k];
+
+        if (AABBOverlap(current.position.xy, current.boundsSize * 0.5,
+                       other.position.xy, other.boundsSize * 0.5))
+        {
+            int prevR;
+            InterlockedAdd(ReboteCounter[0], COLLISION_STRIDE, prevR);
+            if (prevR + (COLLISION_STRIDE - 1) < MAX_COLLISIONS)
+            {
+                OutRebotePairs[prevR + 0] = (int) id;
+                OutRebotePairs[prevR + 1] = (int) k;
+                OutRebotePairs[prevR + 2] = 1;
+            }
+
+            if (current.isProjectile == 1 && current.reachedGoal == 0)
+            {
+                ApplyImpulse(id, current, other, newVelocity, newPosition);
+            }
+        }
+    }
+
+    // Guardar resultados
+    OutVelocities[id] = newVelocity;
+    OutPositions[id] = newPosition;
+}

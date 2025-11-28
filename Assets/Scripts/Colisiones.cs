@@ -2,285 +2,296 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// Detecta colisiones AABB entre SpriteRenderer y muestra un feedback visual simple.
 public class ColisionPorCodigo : MonoBehaviour
 {
-    // Sprites a comprobar (asignar en el inspector).
-    public List<SpriteRenderer> objetos = new List<SpriteRenderer>();
+	// --- Configuración pública ---
+	public List<SpriteRenderer> objetos = new List<SpriteRenderer>();
+	public List<SpriteRenderer> objetosRebote = new List<SpriteRenderer>();
 
-    // objetos con los que se debe rebotar (separada de 'objetos')
-    [Tooltip("Objetos que provocan rebote al colisionar con cualquiera de 'objetos'")]
-    public List<SpriteRenderer> objetosRebote = new List<SpriteRenderer>();
+	public float impulseStrength =5f;
+	public float separationOffset =0.02f;
 
-    // Fuerza del impulso aplicado al proyectil (vector de signo)
-    [Tooltip("Magnitud del impulso aplicado al proyectil al chocar con un objeto de 'objetosRebote'")]
-    public float impulseStrength = 5f;
+	public Color flashColor = Color.red;
+	public float flashDuration =0.12f;
 
-    // Small offset para sacar al proyectil de la superposición
-    [Tooltip("Desplazamiento mínimo para separar el proyectil del objeto tras el impacto")]
-    public float separationOffset = 0.02f;
+	public float punchAmount =0.15f;
+	public float punchDuration =0.12f;
 
-    // Feedback visual
-    public Color flashColor = Color.red;
-    public float flashDuration = 0.12f;
+	public float bounceDamping =0.8f;
+	public float maxSpeed =20f;
 
-    // "Punch" de escala al impactar
-    [Tooltip("Factor de aumento de escala (por ejemplo 0.15 = +15%)")]
-    public float punchAmount = 0.15f;
-    public float punchDuration = 0.12f;
+	// --- Estado interno ---
+	HashSet<(SpriteRenderer, SpriteRenderer)> colisionesPrevias = new HashSet<(SpriteRenderer, SpriteRenderer)>();
+	HashSet<(SpriteRenderer, SpriteRenderer)> rebotesPrevios = new HashSet<(SpriteRenderer, SpriteRenderer)>();
+	HashSet<SpriteRenderer> spritesEnEfecto = new HashSet<SpriteRenderer>();
 
-    // Colisiones del frame anterior (para disparar efecto sólo al inicio)
-    HashSet<(SpriteRenderer, SpriteRenderer)> colisionesPrevias = new HashSet<(SpriteRenderer, SpriteRenderer)>();
+	// Reutilizar listas para evitar GC
+	List<(SpriteRenderer, SpriteRenderer)> tempColisiones = new List<(SpriteRenderer, SpriteRenderer)>();
+	List<(SpriteRenderer, SpriteRenderer)> tempParesRebote = new List<(SpriteRenderer, SpriteRenderer)>();
 
-    // Colisiones previas entre 'objetos' y 'objetosRebote' (evitar múltiples impulsos por frame)
-    HashSet<(SpriteRenderer, SpriteRenderer)> rebotesPrevios = new HashSet<(SpriteRenderer, SpriteRenderer)>();
+	// Caché de ProjectileController por SpriteRenderer
+	readonly Dictionary<SpriteRenderer, ProjectileController> pcCache = new Dictionary<SpriteRenderer, ProjectileController>();
 
-    // Evita lanzar varias corrutinas sobre el mismo sprite
-    HashSet<SpriteRenderer> spritesEnEfecto = new HashSet<SpriteRenderer>();
+	// --- Bucle principal: detectar colisiones y aplicar efectos/impulsos ---
+	void Update()
+	{
+		tempColisiones.Clear();
+		ObtenerColisiones(objetos, tempColisiones);
 
-    void Update()
-    {
-        var colisiones = ObtenerColisiones(objetos);
+		for (int i =0; i < tempColisiones.Count; i++)
+		{
+			var pair = tempColisiones[i];
+			if (!colisionesPrevias.Contains(pair))
+			{
+				if (pair.Item1 != null) TriggerImpactVisual(pair.Item1);
+				if (pair.Item2 != null) TriggerImpactVisual(pair.Item2);
+			}
+		}
 
-        // Disparar efecto sólo cuando la colisión comienza
-        foreach (var pair in colisiones)
-        {
-            if (!colisionesPrevias.Contains(pair))
-            {
-                if (pair.Item1 != null) TriggerImpactVisual(pair.Item1);
-                if (pair.Item2 != null) TriggerImpactVisual(pair.Item2);
-            }
-        }
+		colisionesPrevias.Clear();
+		for (int i =0; i < tempColisiones.Count; i++) colisionesPrevias.Add(tempColisiones[i]);
 
-        colisionesPrevias = new HashSet<(SpriteRenderer, SpriteRenderer)>(colisiones);
+		tempParesRebote.Clear();
+		ObtenerColisionesEntreListas(objetos, objetosRebote, tempParesRebote);
 
-        // --- Gestión de impulsos entre 'objetos' y 'objetosRebote' ---
-        var paresRebote = ObtenerColisionesEntreListas(objetos, objetosRebote);
+		for (int i =0; i < tempParesRebote.Count; i++)
+		{
+			var pair = tempParesRebote[i];
+			if (!rebotesPrevios.Contains(pair))
+			{
+				if (pair.Item1 != null) TriggerImpactVisual(pair.Item1);
+				if (pair.Item2 != null) TriggerImpactVisual(pair.Item2);
 
-        foreach (var pair in paresRebote)
-        {
-            if (!rebotesPrevios.Contains(pair))
-            {
-                if (pair.Item1 != null) TriggerImpactVisual(pair.Item1);
-                if (pair.Item2 != null) TriggerImpactVisual(pair.Item2);
+				AplicarImpulso(pair.Item1, pair.Item2);
+			}
+		}
 
-                AplicarImpulso(pair.Item1, pair.Item2);
-            }
-        }
+		rebotesPrevios.Clear();
+		for (int i =0; i < tempParesRebote.Count; i++) rebotesPrevios.Add(tempParesRebote[i]);
+	}
 
-        rebotesPrevios = new HashSet<(SpriteRenderer, SpriteRenderer)>(paresRebote);
-    }
+	// --- Efecto visual: flash + "punch" ---
+	void TriggerImpactVisual(SpriteRenderer sr)
+	{
+		if (sr == null) return;
+		if (spritesEnEfecto.Contains(sr)) return;
 
-    // Lanza la corrutina de feedback si no está ya en curso
-    void TriggerImpactVisual(SpriteRenderer sr)
-    {
-        if (sr == null) return;
-        if (spritesEnEfecto.Contains(sr)) return;
+		StartCoroutine(ImpactVisualCoroutine(sr));
+	}
 
-        StartCoroutine(ImpactVisualCoroutine(sr));
-    }
+	IEnumerator ImpactVisualCoroutine(SpriteRenderer sr)
+	{
+		if (sr == null) yield break;
 
-    // Corrutina: flash de color + punch de escala
-    IEnumerator ImpactVisualCoroutine(SpriteRenderer sr)
-    {
-        if (sr == null) yield break;
+		spritesEnEfecto.Add(sr);
 
-        spritesEnEfecto.Add(sr);
+		Color original = sr.color;
+		sr.color = flashColor;
 
-        Color original = sr.color;
-        sr.color = flashColor;
+		Vector3 originalScale = sr.transform.localScale;
+		Vector3 targetScale = originalScale * (1f + punchAmount);
 
-        Vector3 originalScale = sr.transform.localScale;
-        Vector3 targetScale = originalScale * (1f + punchAmount);
+		float half = punchDuration *0.5f;
+		float elapsed =0f;
 
-        float half = punchDuration * 0.5f;
-        float elapsed = 0f;
+		while (elapsed < half)
+		{
+			if (sr == null) break;
+			elapsed += Time.deltaTime;
+			float t = Clamp01(elapsed / half);
+			float s = SmoothStep01(t);
 
-        // Escalar hacia arriba (interpolación manual y smoothstep manual)
-        while (elapsed < half)
-        {
-            if (sr == null) break;
-            elapsed += Time.deltaTime;
-            float t = Clamp01(elapsed / half);
-            float s = SmoothStep01(t);
+			sr.transform.localScale = new Vector3(
+				originalScale.x + (targetScale.x - originalScale.x) * s,
+				originalScale.y + (targetScale.y - originalScale.y) * s,
+				originalScale.z + (targetScale.z - originalScale.z) * s
+			);
 
-            // Interpolación manual por componentes (sin usar Lerp)
-            sr.transform.localScale = new Vector3(
-                originalScale.x + (targetScale.x - originalScale.x) * s,
-                originalScale.y + (targetScale.y - originalScale.y) * s,
-                originalScale.z + (targetScale.z - originalScale.z) * s
-            );
+			yield return null;
+		}
 
-            yield return null;
-        }
+		elapsed =0f;
+		while (elapsed < half)
+		{
+			if (sr == null) break;
+			elapsed += Time.deltaTime;
+			float t = Clamp01(elapsed / half);
+			float s = SmoothStep01(t);
 
-        // Volver a escala original
-        elapsed = 0f;
-        while (elapsed < half)
-        {
-            if (sr == null) break;
-            elapsed += Time.deltaTime;
-            float t = Clamp01(elapsed / half);
-            float s = SmoothStep01(t);
-            sr.transform.localScale = Lerp(targetScale, originalScale, s);
-            yield return null;
-        }
+			sr.transform.localScale = new Vector3(
+				targetScale.x + (originalScale.x - targetScale.x) * s,
+				targetScale.y + (originalScale.y - targetScale.y) * s,
+				targetScale.z + (originalScale.z - targetScale.z) * s
+			);
+			yield return null;
+		}
 
-        // Mantener flash un poco
-        yield return new WaitForSeconds(flashDuration);
+		yield return new WaitForSeconds(flashDuration);
 
-        if (sr != null) sr.color = original;
-        if (sr != null) sr.transform.localScale = originalScale;
+		if (sr != null) sr.color = original;
+		if (sr != null) sr.transform.localScale = originalScale;
 
-        spritesEnEfecto.Remove(sr);
-    }
+		spritesEnEfecto.Remove(sr);
+	}
 
-    // Devuelve pares únicos (i,j con j>i) que se solapan
-    List<(SpriteRenderer, SpriteRenderer)> ObtenerColisiones(List<SpriteRenderer> lista)
-    {
-        var resultado = new List<(SpriteRenderer, SpriteRenderer)>();
-        if (lista == null) return resultado;
+	// --- Detección de colisiones ---
+	void ObtenerColisiones(List<SpriteRenderer> lista, List<(SpriteRenderer, SpriteRenderer)> resultado)
+	{
+		resultado.Clear();
+		if (lista == null) return;
 
-        int n = lista.Count;
-        for (int i = 0; i < n; i++)
-        {
-            var a = lista[i];
-            if (a == null) continue;
-            for (int j = i + 1; j < n; j++)
-            {
-                var b = lista[j];
-                if (b == null) continue;
+		int n = lista.Count;
+		for (int i =0; i < n; i++)
+		{
+			var a = lista[i];
+			if (a == null) continue;
+			Vector2 posA = a.transform.position;
+			Vector2 halfA = a.bounds.size *0.5f;
 
-                if (SeSuperponen(a, b))
-                {
-                    resultado.Add((a, b));
-                }
-            }
-        }
+			for (int j = i +1; j < n; j++)
+			{
+				var b = lista[j];
+				if (b == null) continue;
 
-        return resultado;
-    }
+				Vector2 posB = b.transform.position;
+				Vector2 halfB = b.bounds.size *0.5f;
 
-    // Comprueba colisiones entre dos listas (pares (a,b) donde a ∈ listaA y b ∈ listaB)
-    List<(SpriteRenderer, SpriteRenderer)> ObtenerColisionesEntreListas(List<SpriteRenderer> listaA, List<SpriteRenderer> listaB)
-    {
-        var resultado = new List<(SpriteRenderer, SpriteRenderer)>();
-        if (listaA == null || listaB == null) return resultado;
+				if (AABBOverlap(posA, halfA, posB, halfB))
+				{
+					resultado.Add((a, b));
+				}
+			}
+		}
+	}
 
-        for (int i = 0; i < listaA.Count; i++)
-        {
-            var a = listaA[i];
-            if (a == null) continue;
-            for (int j = 0; j < listaB.Count; j++)
-            {
-                var b = listaB[j];
-                if (b == null) continue;
+	void ObtenerColisionesEntreListas(List<SpriteRenderer> listaA, List<SpriteRenderer> listaB, List<(SpriteRenderer, SpriteRenderer)> resultado)
+	{
+		resultado.Clear();
+		if (listaA == null || listaB == null) return;
 
-                if (SeSuperponen(a, b))
-                {
-                    resultado.Add((a, b));
-                }
-            }
-        }
+		int nA = listaA.Count;
+		int nB = listaB.Count;
+		for (int i =0; i < nA; i++)
+		{
+			var a = listaA[i];
+			if (a == null) continue;
+			Vector2 posA = a.transform.position;
+			Vector2 halfA = a.bounds.size *0.5f;
 
-        return resultado;
-    }
+			for (int j =0; j < nB; j++)
+			{
+				var b = listaB[j];
+				if (b == null) continue;
 
-    // Comprobación AABB usando bounds del SpriteRenderer
-    bool SeSuperponen(SpriteRenderer a, SpriteRenderer b)
-    {
-        Vector2 posA = a.transform.position;
-        Vector2 posB = b.transform.position;
-        Vector2 sizeA = a.bounds.size;
-        Vector2 sizeB = b.bounds.size;
+				Vector2 posB = b.transform.position;
+				Vector2 halfB = b.bounds.size *0.5f;
 
-        Rect rectA = new Rect(posA - sizeA / 2f, sizeA);
-        Rect rectB = new Rect(posB - sizeB / 2f, sizeB);
+				if (AABBOverlap(posA, halfA, posB, halfB))
+				{
+					resultado.Add((a, b));
+				}
+			}
+		}
+	}
 
-        return rectA.Overlaps(rectB);
-    }
+	static bool AABBOverlap(Vector2 posA, Vector2 halfA, Vector2 posB, Vector2 halfB)
+	{
+		float dx = posA.x - posB.x;
+		float dy = posA.y - posB.y;
+		float overlapX = halfA.x + halfB.x;
+		float overlapY = halfA.y + halfB.y;
+		if (dx <0f) dx = -dx;
+		if (dy <0f) dy = -dy;
+		return (dx <= overlapX) && (dy <= overlapY);
+	}
 
-    // Aplica un impulso al ProjectileController encontrado en uno de los dos sprites.
-    // El impulso es un vector de signo determinado por la posición relativa.
-    // Además separa al proyectil del objeto para evitar que quede solapado y atraviese otras paredes.
-    void AplicarImpulso(SpriteRenderer a, SpriteRenderer b)
-    {
-        if (a == null || b == null) return;
+	// --- Manejo de impulsos ---
+	void AplicarImpulso(SpriteRenderer a, SpriteRenderer b)
+	{
+		if (a == null || b == null) return;
 
-        // Priorizar detectar ProjectileController en 'a' luego en 'b'
-        ProjectileController pc = a.GetComponent<ProjectileController>();
-        SpriteRenderer other = b;
-        if (pc == null)
-        {
-            pc = b.GetComponent<ProjectileController>();
-            other = a;
-        }
+		ProjectileController pc = GetCachedProjectile(a);
+		SpriteRenderer other = b;
+		if (pc == null)
+		{
+			pc = GetCachedProjectile(b);
+			other = a;
+		}
 
-        if (pc == null) return; // ninguno es proyectil
+		if (pc == null) return;
+		if (pc.reachedGoal) return;
 
-        // No aplicar si ya llegó a la meta
-        if (pc.reachedGoal) return;
+		Vector2 posP = pc.transform.position;
+		Vector2 posO = other.transform.position;
 
-        // Dirección aproximada sin usar funciones matemáticas: signo de la diferencia de centros
-        Vector2 dir = (Vector2)pc.transform.position - (Vector2)other.transform.position;
+		SpriteRenderer srP = pc.GetComponent<SpriteRenderer>();
+		Vector2 halfP = srP != null ? srP.bounds.size *0.5f : Vector2.zero;
+		Vector2 halfO = other.bounds.size *0.5f;
 
-        float sx = dir.x > 0f ? 1f : (dir.x < 0f ? -1f : 0f);
-        float sy = dir.y > 0f ? 1f : (dir.y < 0f ? -1f : 0f);
+		float dx = posP.x - posO.x;
+		float dy = posP.y - posO.y;
+		float absDx = dx <0f ? -dx : dx;
+		float absDy = dy <0f ? -dy : dy;
 
-        // Si la diferencia es casi cero, usar impulso hacia arriba
-        if (sx == 0f && sy == 0f)
-        {
-            sy = 1f;
-        }
+		float overlapX = (halfP.x + halfO.x) - absDx;
+		float overlapY = (halfP.y + halfO.y) - absDy;
 
-        Vector2 impulso = new Vector2(sx * impulseStrength, sy * impulseStrength);
+		if (overlapX <=0f && overlapY <=0f) return;
 
-        // Evitar que la componente de velocidad apunte hacia la pared:
-        float vx = pc.velocity.x;
-        float vy = pc.velocity.y;
-        if (sx != 0f && vx * sx < 0f)
-        {
-            vx = -vx; // invertir componente que apunta hacia la pared
-        }
-        if (sy != 0f && vy * sy < 0f)
-        {
-            vy = -vy;
-        }
+		float vx = pc.velocity.x;
+		float vy = pc.velocity.y;
 
-        // Aplicar impulso sumándolo a la velocidad ajustada.
-        pc.velocity = new Vector2(vx, vy) + impulso;
+		if (overlapX < overlapY)
+		{
+			float signX = dx <0f ? -1f :1f;
+			vx = -vx * bounceDamping;
+			float push = overlapX + separationOffset;
+			pc.transform.position = (Vector2)pc.transform.position + new Vector2(signX * push,0f);
+			vx += signX * impulseStrength;
+		}
+		else
+		{
+			float signY = dy <0f ? -1f :1f;
+			vy = -vy * bounceDamping;
+			float push = overlapY + separationOffset;
+			pc.transform.position = (Vector2)pc.transform.position + new Vector2(0f, signY * push);
+			vy += signY * impulseStrength;
+		}
 
-        // Separar ligeramente al proyectil fuera del objeto para evitar solapamiento
-        float ox = sx * separationOffset;
-        float oy = sy * separationOffset;
-        pc.transform.position = (Vector2)pc.transform.position + new Vector2(ox, oy);
+		float magSq = vx * vx + vy * vy;
+		float maxSq = maxSpeed * maxSpeed;
+		if (magSq > maxSq)
+		{
+			float inv = (float)(1.0 / System.Math.Sqrt(magSq));
+			float scale = maxSpeed * inv;
+			vx *= scale;
+			vy *= scale;
+		}
 
-        // Asegurar que el proyectil está marcado como lanzado para que siga siendo actualizado
-        pc.launched = true;
-    }
+		pc.velocity = new Vector2(vx, vy);
+		pc.launched = true;
+	}
 
-    // Helpers manuales (sin usar Mathf)
-    static float Clamp01(float v)
-    {
-        if (v <= 0f) return 0f;
-        if (v >= 1f) return 1f;
-        return v;
-    }
+	// --- Caché ---
+	ProjectileController GetCachedProjectile(SpriteRenderer sr)
+	{
+		if (sr == null) return null;
+		if (pcCache.TryGetValue(sr, out var pc)) return pc;
+		pc = sr.GetComponent<ProjectileController>();
+		pcCache[sr] = pc;
+		return pc;
+	}
 
-    // SmoothStep para [0,1] -> t*t*(3 - 2*t)
-    static float SmoothStep01(float t)
-    {
-        // asume t en [0,1]
-        return (t * t) * (3f - 2f * t);
-    }
+	// --- Utilidades ---
+	static float Clamp01(float v)
+	{
+		if (v <=0f) return 0f;
+		if (v >=1f) return 1f;
+		return v;
+	}
 
-    // Lerp manual para Vector3
-    static Vector3 Lerp(Vector3 a, Vector3 b, float t)
-    {
-        return new Vector3(
-            a.x + (b.x - a.x) * t,
-            a.y + (b.y - a.y) * t,
-            a.z + (b.z - a.z) * t
-        );
-    }
+	static float SmoothStep01(float t)
+	{
+		return (t * t) * (3f -2f * t);
+	}
 }
