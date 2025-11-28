@@ -1,0 +1,27 @@
+#pragma kernel CSMain
+
+struct Asteroid {
+    float2 pos;
+    float speed;
+};
+
+RWStructuredBuffer<Asteroid> asteroids;
+
+float deltaTime;
+float2 bounds;
+
+[numthreads(256, 1, 1)]
+void CSMain(uint id : SV_DispatchThreadID)
+{
+    Asteroid a = asteroids[id];
+
+    a.pos.y -= a.speed * deltaTime;
+
+    if (a.pos.y < -bounds.y)
+    {
+        a.pos.y = bounds.y;
+        a.pos.x = (frac(sin(id * 12.9898) * 43758.5453) * 2 - 1) * bounds.x;
+    }
+
+    asteroids[id] = a;
+}
